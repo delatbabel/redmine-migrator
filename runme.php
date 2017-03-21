@@ -124,6 +124,56 @@ function defineStatusMapping(array $config, $source, $dest)
 }
 
 /**
+ * Show priorities
+ *
+ * @param Redmine\Client $client
+ */
+function showPriorities($client)
+{
+    $priorities = $client->issue_priority->all();
+
+    print "+-------+----------------------------------------------------+\n";
+    printf("| %5s | %-50s |\n", 'id', 'Issue Priority Name');
+    print "+-------+----------------------------------------------------+\n";
+    foreach ($priorities['issue_priorities'] as $priority) {
+        printf("| %5d | %-50s |\n", $priority['id'], $priority['name']);
+    }
+    print "+-------+----------------------------------------------------+\n\n";
+}
+
+/**
+ * Define the priority mapping from source issue priorities to destination issue priorities
+ *
+ * @param array $config
+ * @param Redmine\Client $source
+ * @param Redmine\Client $dest
+ * @return array
+ */
+function definePriorityMapping(array $config, $source, $dest)
+{
+    if (isset($config['priority_map']) && is_array($config['priority_map'])) {
+        return $config;
+    }
+
+    //
+    // Show Priorities
+    //
+    print "\nSource Issue Priorities\n\n";
+    showPriorities($source);
+
+    $priorities = $source->issue_priority->all();
+    foreach ($priorities['issue_priorities'] as $priority) {
+        print "Source Issue Priority ID " . $priority['id'] . ", name: " . $priority['name'] . "\n";
+        print "\nDestination Issue Priorities\n\n";
+        showPriorities($dest);
+        $config['priority_map'][$priority['id']] = readline('Enter the destination issue priority ID for source issue priority ' .
+            $priority['name'] . ': ');
+    }
+
+    return $config;
+}
+
+/**
  * Show users
  *
  * @param Redmine\Client $client
@@ -254,6 +304,12 @@ $config = defineStatusMapping($config, $source, $dest);
 file_put_contents($config_file, json_encode($config, JSON_PRETTY_PRINT));
 
 //
+// Have the priority mappings been defined?
+//
+$config = definePriorityMapping($config, $source, $dest);
+file_put_contents($config_file, json_encode($config, JSON_PRETTY_PRINT));
+
+//
 // Have the user mappings been defined?
 //
 $config = defineUserMapping($config, $source, $dest);
@@ -267,64 +323,95 @@ file_put_contents($config_file, json_encode($config, JSON_PRETTY_PRINT));
 $source_project_id = $config['project_map']['source_project_id'];
 $dest_project_id = $config['project_map'][$source_project_id];
 
-$issues = $source->issue->all(['limit' => 100, 'sort' => 'id', 'project_id' => $source_project_id]);
+//
+// Get destination server user ID to username mapping, required for setImpersonateUser()
+//
+$users = $dest->user->all();
+$userNameMap = [];
+foreach ($users['users'] as $user) {
+    $userNameMap[$user['id']] = $user['login'];
+}
+
+//
+// Get the list of issues
+// FIXME: Only does 100 issues, does not page through the entire project.
+//
+$issues = $source->issue->all([
+    'limit'         => 100,
+    'sort'          => 'id',
+    'project_id'    => $source_project_id,
+]);
 # print_r($issues);
 
 foreach ($issues['issues'] as $issue) {
-    print $issue['id'] . ', ' . $issue['subject'] . ', ' . $issue['status']['name'] . "\n";
+    print "Processing issue ID " . $issue['id'] . ', ' . $issue['subject'] . ', Status: ' . $issue['status']['name'] . "\n";
+
+    // If you just wanted to try one issue you could find the issue ID and put it in here.
+    // if ($issue['id'] != 174) {
+    //     continue;
+    // }
+
+    // Get the issue data
+    $issue_data = $source->issue->show($issue['id'], ['include' => 'attachments,journals']);
+    $issue_data = $issue_data['issue'];
+
+    // echo "\nSource Issue Data\n=================\n\n";
+    // print_r($issue_data);
+
+    // Create a new issue on the destination server
+    $create_attributes = [
+        'project_id'        => $dest_project_id,
+        'tracker_id'        => $config['tracker_map'][$issue_data['tracker']['id']],
+        'status_id'         => $config['status_map'][$issue_data['status']['id']],
+        'priority_id'       => $config['priority_map'][$issue_data['priority']['id']],
+        'subject'           => $issue_data['subject'],
+        'description'       => $issue_data['description'],
+        'assigned_to_id'    => $config['user_map'][$issue_data['assigned_to']['id']],
+        'author_id'         => $config['user_map'][$issue_data['author']['id']],
+    ];
+    if (! empty($issue_data['estimated_hours'])) {
+        $create_attributes['estimated_hours'] = $issue_data['estimated_hours'];
+    }
+
+    // echo "\nDestination Issue Data\n======================\n\n";
+    // print_r($create_attributes);
+
+    // Switch user and create the destination issue
+    $dest->setImpersonateUser($userNameMap[$create_attributes['author_id']]);
+    $postResult = $dest->issue->create($create_attributes);
+    $dest->setImpersonateUser();
+
+    // echo "\nPOST Results\n============\n\n";
+    // print_r($postResult);
+    /** @var int $new_issue_id */
+    $new_issue_id = $postResult->id;
+    echo "New issue $new_issue_id created.\n";
+
+    // Go through all of the journals and add the notes.  At this stage I'm not really interested
+    // in journals that don't have notes (e.g. status changes).
+    if (! empty($issue_data['journals'])) {
+        foreach ($issue_data['journals'] as $journal) {
+            if (empty($journal['notes'])) {
+                continue;
+            }
+            $private_note = false;
+            $dest->issue->addNoteToIssue($new_issue_id, $journal['notes'], $private_note);
+            echo "Note added to issue.\n";
+        }
+    }
+
+    // Go through all of the attachments and add them ot the destination server
+    if (! empty($issue_data['attachments'])) {
+        foreach ($issue_data['attachments'] as $attachment) {
+            $file_content = $source->attachment->download($attachment['id']);
+            // To upload a file + attach it to an existing issue with $issueId
+            $upload = json_decode($dest->attachment->upload($file_content));
+            $dest->issue->attach($new_issue_id, [
+                'token'         => $upload->upload->token,
+                'filename'      => $attachment['filename'],
+                'description'   => $attachment['description'],
+            ]);
+            echo "Attachment added to issue.\n";
+        }
+    }
 }
-
-
-//
-// This is what one issue looks like
-//
-/*
-            [24] => Array
-                (
-                    [created_on] => 2016-05-19T08:09:18Z
-                    [tracker] => Array
-                        (
-                            [id] => 3
-                            [name] => Software Support
-                        )
-
-                    [updated_on] => 2016-05-19T08:09:18Z
-                    [author] => Array
-                        (
-                            [id] => 3
-                            [name] => Del Elson
-                        )
-
-                    [description] => Complete the eWay update as per #221
-                    [id] => 336
-                    [status] => Array
-                        (
-                            [id] => 7
-                            [name] => Approved
-                        )
-
-                    [start_date] => 2016-05-19
-                    [assigned_to] => Array
-                        (
-                            [id] => 3
-                            [name] => Del Elson
-                        )
-
-                    [priority] => Array
-                        (
-                            [id] => 2
-                            [name] => Normal
-                        )
-
-                    [estimated_hours] => 8
-                    [subject] => Complete eWay update
-                    [project] => Array
-                        (
-                            [id] => 4
-                            [name] => United Florist
-                        )
-
-                    [done_ratio] => 0
-                )
-
- */
