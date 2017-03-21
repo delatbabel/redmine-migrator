@@ -1,0 +1,17 @@
+{
+    "name": "delatbabel/redmine-migrator",
+    "description": "Migrate a project from one redmine instance to another using the API.",
+    "keywords": ["redmine", "migrate", "project"],
+    "license": "MIT",
+    "type": "project",
+    "require": {
+        "kbsali/redmine-api": "~1.0"
+    },
+    "require-dev": {
+    },
+    "config": {
+        "preferred-install": "dist"
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
