@@ -332,6 +332,12 @@ foreach ($users['users'] as $user) {
     $userNameMap[$user['id']] = $user['login'];
 }
 
+/////////////////////////////////////////////////////////////////////////////////////
+//
+// Issues
+//
+/////////////////////////////////////////////////////////////////////////////////////
+
 //
 // Get the list of issues
 // FIXME: Only does 100 issues, does not page through the entire project.
@@ -345,6 +351,12 @@ $issues = $source->issue->all([
 
 foreach ($issues['issues'] as $issue) {
     print "Processing issue ID " . $issue['id'] . ', ' . $issue['subject'] . ', Status: ' . $issue['status']['name'] . "\n";
+
+    // Don't process the same issue twice.
+    if (! empty($config['issue_map'][$issue['id']])) {
+        print "Already processed -- continuing.\n";
+        continue;
+    }
 
     // If you just wanted to try one issue you could find the issue ID and put it in here.
     // if ($issue['id'] != 174) {
@@ -387,6 +399,10 @@ foreach ($issues['issues'] as $issue) {
     $new_issue_id = $postResult->id;
     echo "New issue $new_issue_id created.\n";
 
+    // Add this to the issue map
+    $config['issue_map'][$issue['id']] = $new_issue_id;
+    file_put_contents($config_file, json_encode($config, JSON_PRETTY_PRINT));
+
     // Go through all of the journals and add the notes.  At this stage I'm not really interested
     // in journals that don't have notes (e.g. status changes).
     if (! empty($issue_data['journals'])) {
@@ -412,6 +428,73 @@ foreach ($issues['issues'] as $issue) {
                 'description'   => $attachment['description'],
             ]);
             echo "Attachment added to issue.\n";
+        }
+    }
+}
+
+/////////////////////////////////////////////////////////////////////////////////////
+//
+// Wikis
+//
+/////////////////////////////////////////////////////////////////////////////////////
+
+$wikis = $source->wiki->all($source_project_id);
+$wikis = $wikis['wiki_pages'];
+// print_r($wikis);
+
+foreach ($wikis as $wiki) {
+    print 'Processing wiki page ' . $wiki['title'] . "\n";
+
+    // Don't process the same page twice.
+    if (! empty($config['wiki_page_map'][$wiki['title']])) {
+        print "Already processed -- continuing.\n";
+        continue;
+    }
+
+    // To limit migration to one page only, uncomment this.
+    // if ($wiki['title'] != 'Wiki') {
+    //     continue;
+    // }
+
+    // Get the page contents
+    $page = $source->wiki->show($source_project_id, $wiki['title']);
+    $page = $page['wiki_page'];
+
+    // Create the new page on the destination server
+    $dest->wiki->create($dest_project_id, $wiki['title'], [
+        'text' => $page['text'],
+    ]);
+    echo "New page title " . $wiki['title'] . " created.\n";
+
+    // Save this to the wiki page map
+    $config['wiki_page_map'][$wiki['title']] = $wiki['title'];
+    file_put_contents($config_file, json_encode($config, JSON_PRETTY_PRINT));
+
+    // Go through all of the attachments and add them ot the destination server
+    if (! empty($page['attachments'])) {
+        foreach ($page['attachments'] as $attachment) {
+            $file_content = $source->attachment->download($attachment['id']);
+
+            // Currently the php-redmine-api doesn't support attaching files to a wiki page
+            // so we just store the file locally and ask the user to attach.
+            file_put_contents($attachment['filename'], $file_content);
+            echo "Please upload file " . $attachment['filename'] . " to page " . $wiki['title'] . "\n";
+
+            /*
+            // To upload a file + attach it to an existing issue with $issueId
+            $upload = json_decode($dest->attachment->upload($file_content));
+            $result = $dest->wiki->update($dest_project_id, $wiki['title'], [
+                'text'      => $page['text'],
+                'uploads'   => [0 => [
+                    'token'         => $upload->upload->token,
+                    'filename'      => $attachment['filename'],
+                ]]
+            ]);
+            print "=====\n";
+            print_r($result);
+            print "=====\n";
+            echo "Attachment " . $attachment['filename'] . " added to wiki page.\n";
+            */
         }
     }
 }

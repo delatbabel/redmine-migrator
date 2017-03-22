@@ -24,6 +24,22 @@ Configuration is written back to the file config.json as the script progresses, 
 time you run the script, configuration is read back from the file.  To start from scratch,
 just delete the config.json file.
 
+## Status
+
+All of the configuration is asked from the command line.  If it has been supplied from the
+command line on a previous run, it is not asked again (unless the config.json file has been
+deleted).
+
+The following is working so far:
+
+* Source and destination servers can be supplied.
+* Mapping of trackers (issue types) from source to destination
+* Mapping of issue statuses from source to destination
+* Mapping of priorities from source to destination
+* Mapping of users from source to destination
+* Migration of issues.  If the program is re-run, previously migrated issues are not migrated a second time.
+* Migration of wiki pages, except attachments.
+
 ## TODO
 
 Turn this into a web application using a framework like Laravel, storing the configuration
@@ -35,6 +51,9 @@ in the session.
 * Custom fields not supported yet
 * Watchers not supported yet
 * is_private not supported yet
+* Wiki pages are migrated but the underlying library does not support migrating attaches on image pages.
+* Re-numbering of issues in comments and wiki pages, i.e. from #oldnumber to #newnumber.
+* All issues are migrated with the correct creator but the issue comments are all migrated with the creator == the owner of the API key.
 
 ## Data Dumps
 
